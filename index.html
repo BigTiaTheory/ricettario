@@ -67,7 +67,7 @@ label.sw{display:flex;align-items:center;gap:10px;font-size:16px;color:var(--tx)
 <div id="app"></div>
 <script type="module">
 import {initializeApp} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
-import {getAuth,onAuthStateChanged,signInWithEmailAndPassword,signOut,sendPasswordResetEmail,updatePassword,reauthenticateWithCredential,EmailAuthProvider} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {initializeAuth,indexedDBLocalPersistence,browserLocalPersistence,onAuthStateChanged,signInWithEmailAndPassword,signOut,sendPasswordResetEmail,updatePassword,reauthenticateWithCredential,EmailAuthProvider} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
 import {initializeFirestore,persistentLocalCache,persistentMultipleTabManager,collection,doc,setDoc,updateDoc,deleteDoc,onSnapshot,arrayUnion,arrayRemove,writeBatch,serverTimestamp,query,where,getDocs} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 import {firebaseConfig} from "./firebase-config.js";
 
@@ -85,7 +85,8 @@ var configured=firebaseConfig&&firebaseConfig.apiKey&&firebaseConfig.apiKey.inde
 var auth,db,col,unsubs=[];
 if(configured){
   var fb=initializeApp(firebaseConfig);
-  auth=getAuth(fb);
+  auth=initializeAuth(fb,{persistence:[indexedDBLocalPersistence,browserLocalPersistence]});
+  try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist();}catch(e){}
   db=initializeFirestore(fb,{localCache:persistentLocalCache({tabManager:persistentMultipleTabManager()})});
   col=collection(db,"ricettario");
 }
@@ -216,6 +217,7 @@ function doSave(){
   var steps=[].map.call(document.querySelectorAll(".st-r textarea"),function(e){return e.value.trim()}).filter(Boolean);
   var data={title:title,type:$("#ty").value,tags:tags,ing:ing,steps:steps,updatedAt:serverTimestamp()};
   var r=S.id?byId(S.id):null;
+  var isNew=!r;
   var own=!r||r.createdBy===S.uid;
   if(own)data.shared=$("#sh").checked;
   if(r){
@@ -228,7 +230,7 @@ function doSave(){
     S.recipes.push(r);S.id=ref.id;
     setDoc(ref,Object.assign({favs:[],comments:{},createdBy:S.uid,createdAt:serverTimestamp()},data)).catch(fail);
   }
-  S.view="detail";render();window.scrollTo(0,0);
+  if(isNew)go("detail",r.id,true);else back();
 }
 function fail(e){console.error(e);S.err=(e&&e.code==="permission-denied")?"Operazione non consentita dalle regole di Firestore.":"Operazione non riuscita.";alert(S.err);}
 var cmT=null;
@@ -239,6 +241,25 @@ function flushComment(){
   var o={};o["comments."+S.uid]=v;
   updateDoc(doc(col,r.id),o).then(function(){var s=$("#cmok");if(s)s.textContent="Salvato ✓";}).catch(function(){var s=$("#cmok");if(s)s.textContent="Errore: non salvato";});
 }
+
+/* ---------- navigazione (supporta lo swipe indietro) ---------- */
+function go(v,id,replace){
+  flushComment();
+  if(S.view==="home")S.hs=window.scrollY;
+  var n=(history.state&&history.state.n)||0;
+  history[replace?"replaceState":"pushState"]({v:v,id:id||null,n:replace?n:n+1},"");
+  S.view=v;S.id=id||null;render();
+  window.scrollTo(0,v==="home"?(S.hs||0):0);
+}
+function back(){if(history.state&&history.state.n>0)history.back();else go("home",null,true);}
+window.addEventListener("popstate",function(e){
+  flushComment();
+  if(S.view==="home")S.hs=window.scrollY;
+  var s=e.state||{v:"home",id:null,n:0};
+  if(!S.uid){S.view="login";S.id=null;}else{S.view=s.v;S.id=s.id;}
+  render();
+  window.scrollTo(0,S.view==="home"?(S.hs||0):0);
+});
 
 /* ---------- eventi ---------- */
 app.addEventListener("input",function(e){
@@ -269,31 +290,32 @@ app.addEventListener("click",function(e){
   var t=e.target.closest("button");if(!t||t.getAttribute("type")==="submit")return;
   var d=t.dataset;
   if(d.tab){S.tab=d.tab;render();}
-  else if(d.open){S.id=d.open;S.view="detail";render();window.scrollTo(0,0);}
-  else if(d.new){S.id=null;S.view="edit";render();window.scrollTo(0,0);}
-  else if(d.home||d.cancel){flushComment();S.view=(d.cancel&&S.id)?"detail":"home";render();}
+  else if(d.open){go("detail",d.open);}
+  else if(d.new){go("edit",null);}
+  else if(d.home||d.cancel){back();}
   else if(d.fav){
     var r=byId(S.id),on=!isFav(r);
     r.favs=on?r.favs.concat(S.uid):r.favs.filter(function(u){return u!==S.uid});
     updateDoc(doc(col,r.id),{favs:on?arrayUnion(S.uid):arrayRemove(S.uid)}).catch(fail);
     render();
   }
-  else if(d.edit){flushComment();S.view="edit";render();window.scrollTo(0,0);}
-  else if(d.del){if(confirm("Eliminare questa ricetta? Sparirà anche per l’altra persona.")){var id=S.id;S.recipes=S.recipes.filter(function(r){return r.id!==id});deleteDoc(doc(col,id)).catch(fail);S.id=null;S.view="home";render();}}
+  else if(d.edit){go("edit",S.id);}
+  else if(d.del){if(confirm("Eliminare questa ricetta? Sparirà anche per l’altra persona.")){var id=S.id;S.recipes=S.recipes.filter(function(r){return r.id!==id});deleteDoc(doc(col,id)).catch(fail);back();}}
   else if(d.addi){$("#il").insertAdjacentHTML("beforeend",rowIng());$("#il").lastChild.querySelector(".q").focus();}
   else if(d.adds){$("#sl").insertAdjacentHTML("beforeend",rowStep());$("#sl").lastChild.querySelector("textarea").focus();}
   else if(d.rm){t.parentNode.remove();}
   else if(d.save){doSave();}
-  else if(d.profile){S.view="profile";render();window.scrollTo(0,0);}
+  else if(d.profile){go("profile",null);}
   else if(d.reset){msg("rmsg","Invio in corso…",true);sendPasswordResetEmail(auth,S.email).then(function(){msg("rmsg","Email inviata a "+S.email+". Controlla anche lo spam.",true);}).catch(function(){msg("rmsg","Non sono riuscito a inviare l’email: riprova più tardi.");});}
   else if(d.out){if(confirm("Uscire dall’account?"))signOut(auth);}
 });
 
 if(configured){
+  app.innerHTML='<div class="empty" style="padding-top:30vh"><div class="big">🍝</div></div>';
   onAuthStateChanged(auth,function(u){
     unsubs.forEach(function(f){f()});unsubs=[];
-    if(!u){S.uid=null;S.email="";S.recipes=[];S.view="login";render();return;}
-    S.uid=u.uid;S.email=u.email||"";S.loginErr="";S.view="home";render();listen();
+    if(!u){S.uid=null;S.email="";S.recipes=[];history.replaceState({v:"login",id:null,n:0},"");S.view="login";S.id=null;render();return;}
+    S.uid=u.uid;S.email=u.email||"";S.loginErr="";history.replaceState({v:"home",id:null,n:0},"");S.view="home";S.id=null;render();listen();
   });
 }else render();
 if("serviceWorker" in navigator){window.addEventListener("load",function(){navigator.serviceWorker.register("sw.js").catch(function(){});});}
