@@ -54,6 +54,8 @@ ul.st{padding-left:22px;margin:0}ul.st li{margin:0 0 12px}
 textarea#cm{overflow:hidden;min-height:90px;resize:none}
 .search{margin-bottom:10px}
 .avatar{width:40px;height:40px;border-radius:50%;background:var(--ac);color:#fff;font-weight:700;font-size:18px;display:flex;align-items:center;justify-content:center;flex:none}
+input[type=checkbox]{width:22px;height:22px;flex:none;accent-color:var(--ac)}
+label.sw{display:flex;align-items:center;gap:10px;font-size:16px;color:var(--tx);margin:18px 0 0}
 .pav{width:84px;height:84px;font-size:38px;margin:0 auto}
 .login{max-width:380px;margin:12vh auto 0}
 .login input{margin-bottom:10px}
@@ -66,7 +68,7 @@ textarea#cm{overflow:hidden;min-height:90px;resize:none}
 <script type="module">
 import {initializeApp} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
 import {getAuth,onAuthStateChanged,signInWithEmailAndPassword,signOut,sendPasswordResetEmail,updatePassword,reauthenticateWithCredential,EmailAuthProvider} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-import {initializeFirestore,persistentLocalCache,persistentMultipleTabManager,collection,doc,setDoc,updateDoc,deleteDoc,onSnapshot,arrayUnion,arrayRemove,writeBatch,serverTimestamp} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import {initializeFirestore,persistentLocalCache,persistentMultipleTabManager,collection,doc,setDoc,updateDoc,deleteDoc,onSnapshot,arrayUnion,arrayRemove,writeBatch,serverTimestamp,query,where,getDocs} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 import {firebaseConfig} from "./firebase-config.js";
 
 var TYPES=["Antipasto","Primo","Secondo","Contorno","Dolce","Altro"];
@@ -80,12 +82,12 @@ function isFav(r){return r.favs.indexOf(S.uid)>=0;}
 function getComment(r){return (r.comments||{})[S.uid]||"";}
 
 var configured=firebaseConfig&&firebaseConfig.apiKey&&firebaseConfig.apiKey.indexOf("INCOLLA")<0;
-var auth,db,col,unsub=null;
+var auth,db,col,unsubs=[];
 if(configured){
   var fb=initializeApp(firebaseConfig);
   auth=getAuth(fb);
   db=initializeFirestore(fb,{localCache:persistentLocalCache({tabManager:persistentMultipleTabManager()})});
-  col=collection(db,"ricette");
+  col=collection(db,"ricettario");
 }
 
 /* ---------- viste ---------- */
@@ -105,7 +107,7 @@ function profile(){
   app.innerHTML=h;
 }
 function card(r){
-  return '<button class="card" data-open="'+r.id+'"><div class="f"><div class="t">'+esc(r.title)+'</div><div class="s">'+esc(r.type)+(r.tags.length?' · '+r.tags.map(esc).join(', '):'')+'</div></div>'+(isFav(r)?'<span class="star">★</span>':'')+'</button>';
+  return '<button class="card" data-open="'+r.id+'"><div class="f"><div class="t">'+esc(r.title)+'</div><div class="s">'+esc(r.type)+(r.tags.length?' · '+r.tags.map(esc).join(', '):'')+'</div></div>'+(r.shared?'':'<span title="Privata">🔒</span>')+(isFav(r)?'<span class="star">★</span>':'')+'</button>';
 }
 function matches(r){
   var q=S.q.trim().toLowerCase();if(!q)return true;
@@ -140,24 +142,26 @@ function renderList(){
 function grow(t){if(!t)return;t.style.height="auto";t.style.height=t.scrollHeight+"px";}
 function detail(){
   var r=byId(S.id);if(!r){S.view="home";return render();}
+  var own=r.createdBy===S.uid;
   var h='<button class="back" data-home="1">‹ Ricette</button>';
   h+='<div class="bar"><h1 style="margin:0">'+esc(r.title)+'</h1><button class="star big" data-fav="1" aria-label="Preferita">'+(isFav(r)?'★':'☆')+'</button></div>';
-  h+='<div style="margin-top:6px"><span class="chip">'+esc(r.type)+'</span>'+r.tags.map(function(t){return '<span class="chip">#'+esc(t)+'</span>'}).join('')+'</div>';
+  h+='<div style="margin-top:6px"><span class="chip">'+esc(r.type)+'</span><span class="chip">'+(r.shared?(own?'👥 Condivisa':'👥 Condivisa con te'):'🔒 Privata')+'</span>'+r.tags.map(function(t){return '<span class="chip">#'+esc(t)+'</span>'}).join('')+'</div>';
   h+='<h2>Ingredienti</h2>'+(r.ing.length?r.ing.map(function(i){return '<div class="ing"><span>'+esc(i.n)+'</span><b>'+esc(i.q)+'</b></div>'}).join(''):'<div style="color:var(--mu)">Nessun ingrediente.</div>');
   h+='<h2>Procedura</h2>'+(r.steps.length?'<ul class="st">'+r.steps.map(function(s){return '<li>'+esc(s)+'</li>'}).join('')+'</ul>':'<div style="color:var(--mu)">Nessun passaggio.</div>');
   h+='<h2>Il mio commento</h2><textarea id="cm" rows="3" placeholder="Es. meno sale la prossima volta…">'+esc(getComment(r))+'</textarea><div id="cmok" style="font-size:13px;color:var(--mu);margin-top:4px;min-height:18px"></div>';
-  h+='<div class="acts"><button class="btn sec" data-edit="1">Modifica</button><button class="btn del" data-del="1">Elimina</button></div>';
+  h+='<div class="acts"><button class="btn sec" data-edit="1">Modifica</button>'+(own?'<button class="btn del" data-del="1">Elimina</button>':'')+'</div>';
   app.innerHTML=h;grow($("#cm"));
 }
 function rowIng(i){i=i||{q:"",n:""};return '<div class="row ing-r"><input class="q" placeholder="Quantità" value="'+esc(i.q)+'"><input class="n" placeholder="Ingrediente" value="'+esc(i.n)+'"><button class="x" data-rm="1" aria-label="Rimuovi">×</button></div>';}
 function rowStep(s){return '<div class="row st-r" style="align-items:flex-start"><span style="padding-top:10px">•</span><textarea style="min-height:56px" placeholder="Passaggio">'+esc(s||"")+'</textarea><button class="x" data-rm="1" aria-label="Rimuovi" style="padding-top:8px">×</button></div>';}
 function edit(){
   var r=S.id?byId(S.id):null;
-  r=r||{title:"",type:"Primo",tags:[],ing:[],steps:[]};
+  r=r||{title:"",type:"Primo",tags:[],ing:[],steps:[],shared:true,createdBy:S.uid};
   var h='<button class="back" data-cancel="1">‹ Annulla</button><h1>'+(S.id?'Modifica ricetta':'Nuova ricetta')+'</h1>';
   h+='<label>Titolo</label><input id="ti" placeholder="Es. Lasagne della domenica" value="'+esc(r.title)+'">';
   h+='<label>Tipologia</label><select id="ty">'+TYPES.map(function(t){return '<option'+(t===r.type?' selected':'')+'>'+t+'</option>'}).join('')+'</select>';
   h+='<label>Tag (separati da virgola)</label><input id="tg" placeholder="veloce, vegetariano, estate" value="'+esc(r.tags.join(", "))+'">';
+  if(r.createdBy===S.uid)h+='<label class="sw"><input type="checkbox" id="sh"'+(r.shared?' checked':'')+'> Condividi con l’altra persona</label>';
   h+='<label>Ingredienti</label><div id="il">'+(r.ing.length?r.ing:[null]).map(rowIng).join('')+'</div><button class="btn sec" data-addi="1">+ Ingrediente</button>';
   h+='<label>Procedura</label><div id="sl">'+(r.steps.length?r.steps:[""]).map(rowStep).join('')+'</div><button class="btn sec" data-adds="1">+ Passaggio</button>';
   h+='<div class="fab"><button class="btn" data-save="1">Salva ricetta</button></div>';
@@ -175,14 +179,23 @@ function refresh(){ /* dopo un aggiornamento dal database: non disturbare chi st
 }
 
 /* ---------- dati ---------- */
-function snap(d){var x=d.data();return{id:d.id,title:x.title||"",type:x.type||"Altro",tags:x.tags||[],ing:x.ing||[],steps:x.steps||[],favs:x.favs||[],comments:x.comments||{}};}
+function snap(d){var x=d.data();return{id:d.id,title:x.title||"",type:x.type||"Altro",tags:x.tags||[],ing:x.ing||[],steps:x.steps||[],favs:x.favs||[],comments:x.comments||{},shared:x.shared===true,createdBy:x.createdBy||""};}
 function listen(){
-  var first=true;
-  unsub=onSnapshot(col,function(qs){
-    S.recipes=qs.docs.map(snap);S.err="";
-    refresh();
-    if(first){first=false;migrate();}
-  },function(e){console.error(e);S.err=e.code==="permission-denied"?"Non riesco a leggere le ricette online: controlla che la tua email sia scritta nelle regole di Firestore.":"Errore di connessione al database.";refresh();});
+  var mine=[],shr=[],first=true;
+  function merge(){var m={};mine.concat(shr).forEach(function(r){m[r.id]=r});S.recipes=Object.keys(m).map(function(k){return m[k]});S.err="";refresh();}
+  function bad(e){console.error(e);S.err=e.code==="permission-denied"?"Non riesco a leggere le ricette online: controlla che la tua email sia scritta nelle regole di Firestore.":"Errore di connessione al database.";refresh();}
+  unsubs.push(onSnapshot(query(col,where("createdBy","==",S.uid)),function(qs){mine=qs.docs.map(snap);merge();if(first){first=false;migrate().then(migrateOld);}},bad));
+  unsubs.push(onSnapshot(query(col,where("shared","==",true)),function(qs){shr=qs.docs.map(snap);merge();},bad));
+}
+async function migrateOld(){
+  var qs;try{qs=await getDocs(collection(db,"ricette"));}catch(e){return;}
+  if(qs.empty)return;
+  if(!confirm("Ho trovato "+qs.size+" ricette della versione precedente. Vuoi importarle? Saranno condivise con l’altra persona."))return;
+  var b=writeBatch(db);
+  qs.docs.forEach(function(d){var x=d.data();
+    b.set(doc(col,d.id),{title:x.title||"",type:x.type||"Altro",tags:x.tags||[],ing:x.ing||[],steps:x.steps||[],favs:x.favs||[],comments:x.comments||{},shared:true,createdBy:S.uid,createdAt:serverTimestamp()});
+    b.delete(d.ref);});
+  try{await b.commit();}catch(e){alert("Importazione non riuscita: riprova più tardi.");}
 }
 async function migrate(){
   var raw=null,loc=[];
@@ -191,7 +204,7 @@ async function migrate(){
   if(!confirm("Ho trovato "+loc.length+" ricette salvate solo su questo telefono. Vuoi caricarle online?"))return;
   var b=writeBatch(db);
   loc.forEach(function(r){
-    b.set(doc(col,r.id||doc(col).id),{title:r.title,type:r.type,tags:r.tags||[],ing:r.ing||[],steps:r.steps||[],favs:r.fav?[S.uid]:[],comments:r.comment?(function(){var o={};o[S.uid]=r.comment;return o})():{},createdAt:serverTimestamp()});
+    b.set(doc(col,r.id||doc(col).id),{title:r.title,type:r.type,tags:r.tags||[],ing:r.ing||[],steps:r.steps||[],favs:r.fav?[S.uid]:[],comments:r.comment?(function(){var o={};o[S.uid]=r.comment;return o})():{},shared:true,createdBy:S.uid,createdAt:serverTimestamp()});
   });
   try{await b.commit();localStorage.setItem("ricettario-v1-backup",raw);localStorage.removeItem("ricettario-v1");}catch(e){alert("Caricamento non riuscito: riprova più tardi.");}
 }
@@ -203,17 +216,21 @@ function doSave(){
   var steps=[].map.call(document.querySelectorAll(".st-r textarea"),function(e){return e.value.trim()}).filter(Boolean);
   var data={title:title,type:$("#ty").value,tags:tags,ing:ing,steps:steps,updatedAt:serverTimestamp()};
   var r=S.id?byId(S.id):null;
+  var own=!r||r.createdBy===S.uid;
+  if(own)data.shared=$("#sh").checked;
   if(r){
     Object.assign(r,{title:title,type:data.type,tags:tags,ing:ing,steps:steps});
-    setDoc(doc(col,r.id),data,{merge:true}).catch(console.error);
+    if(own)r.shared=data.shared;
+    setDoc(doc(col,r.id),data,{merge:true}).catch(fail);
   }else{
     var ref=doc(col);
-    r={id:ref.id,title:title,type:data.type,tags:tags,ing:ing,steps:steps,favs:[],comments:{}};
+    r={id:ref.id,title:title,type:data.type,tags:tags,ing:ing,steps:steps,favs:[],comments:{},shared:data.shared,createdBy:S.uid};
     S.recipes.push(r);S.id=ref.id;
-    setDoc(ref,Object.assign({favs:[],comments:{},createdBy:S.uid,createdAt:serverTimestamp()},data)).catch(console.error);
+    setDoc(ref,Object.assign({favs:[],comments:{},createdBy:S.uid,createdAt:serverTimestamp()},data)).catch(fail);
   }
   S.view="detail";render();window.scrollTo(0,0);
 }
+function fail(e){console.error(e);S.err=(e&&e.code==="permission-denied")?"Operazione non consentita dalle regole di Firestore.":"Operazione non riuscita.";alert(S.err);}
 var cmT=null;
 function flushComment(){
   if(!cmT)return;clearTimeout(cmT);cmT=null;
@@ -258,11 +275,11 @@ app.addEventListener("click",function(e){
   else if(d.fav){
     var r=byId(S.id),on=!isFav(r);
     r.favs=on?r.favs.concat(S.uid):r.favs.filter(function(u){return u!==S.uid});
-    updateDoc(doc(col,r.id),{favs:on?arrayUnion(S.uid):arrayRemove(S.uid)}).catch(console.error);
+    updateDoc(doc(col,r.id),{favs:on?arrayUnion(S.uid):arrayRemove(S.uid)}).catch(fail);
     render();
   }
   else if(d.edit){flushComment();S.view="edit";render();window.scrollTo(0,0);}
-  else if(d.del){if(confirm("Eliminare questa ricetta? Sparirà anche per l’altra persona.")){var id=S.id;S.recipes=S.recipes.filter(function(r){return r.id!==id});deleteDoc(doc(col,id)).catch(console.error);S.id=null;S.view="home";render();}}
+  else if(d.del){if(confirm("Eliminare questa ricetta? Sparirà anche per l’altra persona.")){var id=S.id;S.recipes=S.recipes.filter(function(r){return r.id!==id});deleteDoc(doc(col,id)).catch(fail);S.id=null;S.view="home";render();}}
   else if(d.addi){$("#il").insertAdjacentHTML("beforeend",rowIng());$("#il").lastChild.querySelector(".q").focus();}
   else if(d.adds){$("#sl").insertAdjacentHTML("beforeend",rowStep());$("#sl").lastChild.querySelector("textarea").focus();}
   else if(d.rm){t.parentNode.remove();}
@@ -274,7 +291,7 @@ app.addEventListener("click",function(e){
 
 if(configured){
   onAuthStateChanged(auth,function(u){
-    if(unsub){unsub();unsub=null;}
+    unsubs.forEach(function(f){f()});unsubs=[];
     if(!u){S.uid=null;S.email="";S.recipes=[];S.view="login";render();return;}
     S.uid=u.uid;S.email=u.email||"";S.loginErr="";S.view="home";render();listen();
   });
