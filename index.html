@@ -50,63 +50,97 @@ ul.st{padding-left:22px;margin:0}ul.st li{margin:0 0 12px}
 .big{font-size:30px}
 .fab{position:fixed;left:0;right:0;bottom:0;padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px));background:linear-gradient(transparent,var(--bg) 35%);}
 .fab .btn{display:block;width:100%;max-width:608px;margin:0 auto;padding:14px;font-size:17px}
+
+textarea#cm{overflow:hidden;min-height:90px;resize:none}
+.search{margin-bottom:10px}
+.out{color:var(--mu);font-size:14px;padding:6px 2px}
+.login{max-width:380px;margin:12vh auto 0}
+.login input{margin-bottom:10px}
+.err{color:#c0392b;font-size:14px;margin:6px 0 10px;min-height:20px}
+.note{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:16px;margin-top:20px}
 </style>
 </head>
 <body>
 <div id="app"></div>
-<script>
+<script type="module">
+import {initializeApp} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
+import {getAuth,onAuthStateChanged,signInWithEmailAndPassword,signOut} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {initializeFirestore,persistentLocalCache,persistentMultipleTabManager,collection,doc,setDoc,updateDoc,deleteDoc,onSnapshot,arrayUnion,arrayRemove,writeBatch,serverTimestamp} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import {firebaseConfig} from "./firebase-config.js";
+
 var TYPES=["Antipasto","Primo","Secondo","Contorno","Dolce","Altro"];
-var KEY="ricettario-v1";
-var S={recipes:[],view:"home",tab:"tipo",id:null};
-function load(){try{var d=localStorage.getItem(KEY);if(d)S.recipes=JSON.parse(d)||[];}catch(e){}}
-function save(){try{localStorage.setItem(KEY,JSON.stringify(S.recipes));}catch(e){}}
+var S={recipes:[],view:"login",tab:"tipo",id:null,q:"",uid:null,loginErr:""};
+var app=document.getElementById("app");
+var $=function(s,e){return (e||document).querySelector(s)};
 function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]});}
 function byId(id){return S.recipes.filter(function(r){return r.id===id})[0];}
-var $=function(s,e){return (e||document).querySelector(s)};
-var app=$("#app");
-
-function card(r){
-  return '<button class="card" data-open="'+r.id+'"><div class="f"><div class="t">'+esc(r.title)+'</div><div class="s">'+esc(r.type)+(r.tags.length?' · '+r.tags.map(esc).join(', '):'')+'</div></div>'+(r.fav?'<span class="star">★</span>':'')+'</button>';
-}
 function sorted(a){return a.slice().sort(function(x,y){return x.title.localeCompare(y.title,"it")});}
+function isFav(r){return r.favs.indexOf(S.uid)>=0;}
+function getComment(r){return (r.comments||{})[S.uid]||"";}
 
+var configured=firebaseConfig&&firebaseConfig.apiKey&&firebaseConfig.apiKey.indexOf("INCOLLA")<0;
+var auth,db,col,unsub=null;
+if(configured){
+  var fb=initializeApp(firebaseConfig);
+  auth=getAuth(fb);
+  db=initializeFirestore(fb,{localCache:persistentLocalCache({tabManager:persistentMultipleTabManager()})});
+  col=collection(db,"ricette");
+}
+
+/* ---------- viste ---------- */
+function setup(){
+  app.innerHTML='<h1>Ricettario</h1><div class="note"><b>Manca la configurazione di Firebase.</b><br><br>Apri il file <code>firebase-config.js</code> e incolla i valori del tuo progetto Firebase (vedi README).</div>';
+}
+function login(){
+  app.innerHTML='<form class="login" id="lf"><h1>Ricettario 🍝</h1><input id="em" type="email" placeholder="Email" autocomplete="username" required><input id="pw" type="password" placeholder="Password" autocomplete="current-password" required><div class="err">'+esc(S.loginErr)+'</div><button class="btn" style="width:100%;padding:13px" type="submit">Accedi</button></form>';
+}
+function card(r){
+  return '<button class="card" data-open="'+r.id+'"><div class="f"><div class="t">'+esc(r.title)+'</div><div class="s">'+esc(r.type)+(r.tags.length?' · '+r.tags.map(esc).join(', '):'')+'</div></div>'+(isFav(r)?'<span class="star">★</span>':'')+'</button>';
+}
+function matches(r){
+  var q=S.q.trim().toLowerCase();if(!q)return true;
+  var hay=(r.title+" "+r.type+" "+r.tags.join(" ")+" "+r.ing.map(function(i){return i.n}).join(" ")).toLowerCase();
+  return q.split(/\s+/).every(function(w){return hay.indexOf(w)>=0});
+}
 function home(){
-  var h='<div class="top"><h1>Ricettario</h1></div>';
+  var h='<div class="top"><h1>Ricettario</h1><button class="out" data-out="1">Esci</button></div>';
+  h+='<input id="q" class="search" type="search" placeholder="Cerca ricetta, tag o ingrediente…" value="'+esc(S.q)+'">';
   h+='<div class="tabs">'+[["tipo","Tipologia"],["tag","Tag"],["fav","★ Preferite"]].map(function(t){return '<button data-tab="'+t[0]+'" class="'+(S.tab===t[0]?'on':'')+'">'+t[1]+'</button>'}).join('')+'</div>';
-  var rs=S.recipes;
-  if(!rs.length){h+='<div class="empty"><div class="big">🍝</div>Nessuna ricetta ancora.<br>Tocca “Nuova ricetta” per iniziare.</div>';}
+  h+='<div id="list"></div><div class="fab"><button class="btn" data-new="1">+ Nuova ricetta</button></div>';
+  app.innerHTML=h;renderList();
+}
+function renderList(){
+  var el=$("#list");if(!el)return;
+  var all=S.recipes,rs=all.filter(matches),h="";
+  if(!all.length)h='<div class="empty"><div class="big">🍝</div>Nessuna ricetta ancora.<br>Tocca “Nuova ricetta” per iniziare.</div>';
+  else if(!rs.length)h='<div class="empty">Nessun risultato per “'+esc(S.q)+'”.</div>';
   else if(S.tab==="tipo"){
     TYPES.forEach(function(t){var l=sorted(rs.filter(function(r){return r.type===t}));if(l.length)h+='<h2>'+t+' ('+l.length+')</h2>'+l.map(card).join('');});
   }else if(S.tab==="tag"){
     var tags={};rs.forEach(function(r){r.tags.forEach(function(t){(tags[t]=tags[t]||[]).push(r)})});
     var ks=Object.keys(tags).sort(function(a,b){return a.localeCompare(b,"it")});
-    if(!ks.length)h+='<div class="empty">Nessun tag: aggiungine alle tue ricette.</div>';
+    if(!ks.length)h='<div class="empty">Nessun tag trovato.</div>';
     ks.forEach(function(k){h+='<h2>#'+esc(k)+' ('+tags[k].length+')</h2>'+sorted(tags[k]).map(card).join('');});
   }else{
-    var f=sorted(rs.filter(function(r){return r.fav}));
-    h+=f.length?f.map(card).join(''):'<div class="empty"><div class="big">☆</div>Tocca la stellina in una ricetta per metterla qui.</div>';
+    var f=sorted(rs.filter(isFav));
+    h=f.length?f.map(card).join(''):'<div class="empty"><div class="big">☆</div>Tocca la stellina in una ricetta per metterla qui.</div>';
   }
-  h+='<div class="fab"><button class="btn" data-new="1">+ Nuova ricetta</button></div>';
-  app.innerHTML=h;
+  el.innerHTML=h;
 }
-
+function grow(t){if(!t)return;t.style.height="auto";t.style.height=t.scrollHeight+"px";}
 function detail(){
   var r=byId(S.id);if(!r){S.view="home";return render();}
   var h='<button class="back" data-home="1">‹ Ricette</button>';
-  h+='<div class="bar"><h1 style="margin:0">'+esc(r.title)+'</h1><button class="star big" data-fav="1" aria-label="Preferita">'+(r.fav?'★':'☆')+'</button></div>';
+  h+='<div class="bar"><h1 style="margin:0">'+esc(r.title)+'</h1><button class="star big" data-fav="1" aria-label="Preferita">'+(isFav(r)?'★':'☆')+'</button></div>';
   h+='<div style="margin-top:6px"><span class="chip">'+esc(r.type)+'</span>'+r.tags.map(function(t){return '<span class="chip">#'+esc(t)+'</span>'}).join('')+'</div>';
-  h+='<h2>Ingredienti</h2>'+(r.ing.length?r.ing.map(function(i){return '<div class="ing"><span>'+esc(i.n)+'</span><b>'+esc(i.q)+'</b></div>'}).join(''):'<div class="s" style="color:var(--mu)">Nessun ingrediente.</div>');
+  h+='<h2>Ingredienti</h2>'+(r.ing.length?r.ing.map(function(i){return '<div class="ing"><span>'+esc(i.n)+'</span><b>'+esc(i.q)+'</b></div>'}).join(''):'<div style="color:var(--mu)">Nessun ingrediente.</div>');
   h+='<h2>Procedura</h2>'+(r.steps.length?'<ul class="st">'+r.steps.map(function(s){return '<li>'+esc(s)+'</li>'}).join('')+'</ul>':'<div style="color:var(--mu)">Nessun passaggio.</div>');
-  h+='<h2>Il mio commento</h2><textarea id="cm" placeholder="Es. meno sale la prossima volta…">'+esc(r.comment||"")+'</textarea><div id="cmok" style="font-size:13px;color:var(--mu);margin-top:4px;min-height:18px"></div>';
+  h+='<h2>Il mio commento</h2><textarea id="cm" rows="3" placeholder="Es. meno sale la prossima volta…">'+esc(getComment(r))+'</textarea><div id="cmok" style="font-size:13px;color:var(--mu);margin-top:4px;min-height:18px"></div>';
   h+='<div class="acts"><button class="btn sec" data-edit="1">Modifica</button><button class="btn del" data-del="1">Elimina</button></div>';
-  app.innerHTML=h;
-  var ta=$("#cm");
-  ta.addEventListener("input",function(){r.comment=ta.value;save();$("#cmok").textContent="Salvato ✓";});
+  app.innerHTML=h;grow($("#cm"));
 }
-
 function rowIng(i){i=i||{q:"",n:""};return '<div class="row ing-r"><input class="q" placeholder="Quantità" value="'+esc(i.q)+'"><input class="n" placeholder="Ingrediente" value="'+esc(i.n)+'"><button class="x" data-rm="1" aria-label="Rimuovi">×</button></div>';}
 function rowStep(s){return '<div class="row st-r" style="align-items:flex-start"><span style="padding-top:10px">•</span><textarea style="min-height:56px" placeholder="Passaggio">'+esc(s||"")+'</textarea><button class="x" data-rm="1" aria-label="Rimuovi" style="padding-top:8px">×</button></div>';}
-
 function edit(){
   var r=S.id?byId(S.id):null;
   r=r||{title:"",type:"Primo",tags:[],ing:[],steps:[]};
@@ -120,39 +154,112 @@ function edit(){
   app.innerHTML=h;
   if(!S.id)$("#ti").focus();
 }
+function render(){
+  if(!configured)return setup();
+  S.view==="login"?login():S.view==="home"?home():S.view==="detail"?detail():edit();
+}
+function refresh(){ /* dopo un aggiornamento dal database: non disturbare chi sta scrivendo */
+  if(S.view==="login"){S.view="home";return render();}
+  if(S.view==="home"){return $("#list")?renderList():render();}
+  if(S.view==="detail"){var a=document.activeElement;if(a&&a.id==="cm")return;return render();}
+}
 
+/* ---------- dati ---------- */
+function snap(d){var x=d.data();return{id:d.id,title:x.title||"",type:x.type||"Altro",tags:x.tags||[],ing:x.ing||[],steps:x.steps||[],favs:x.favs||[],comments:x.comments||{}};}
+function listen(){
+  var first=true;
+  unsub=onSnapshot(col,function(qs){
+    S.recipes=qs.docs.map(snap);
+    refresh();
+    if(first){first=false;migrate();}
+  },function(e){console.error(e);});
+}
+async function migrate(){
+  var raw=null,loc=[];
+  try{raw=localStorage.getItem("ricettario-v1");if(raw)loc=JSON.parse(raw)||[];}catch(e){}
+  if(!loc.length)return;
+  if(!confirm("Ho trovato "+loc.length+" ricette salvate solo su questo telefono. Vuoi caricarle online?"))return;
+  var b=writeBatch(db);
+  loc.forEach(function(r){
+    b.set(doc(col,r.id||doc(col).id),{title:r.title,type:r.type,tags:r.tags||[],ing:r.ing||[],steps:r.steps||[],favs:r.fav?[S.uid]:[],comments:r.comment?(function(){var o={};o[S.uid]=r.comment;return o})():{},createdAt:serverTimestamp()});
+  });
+  try{await b.commit();localStorage.setItem("ricettario-v1-backup",raw);localStorage.removeItem("ricettario-v1");}catch(e){alert("Caricamento non riuscito: riprova più tardi.");}
+}
 function doSave(){
   var title=$("#ti").value.trim();
   if(!title){$("#ti").focus();$("#ti").style.borderColor="#c0392b";return;}
   var tags=[];$("#tg").value.split(",").forEach(function(t){t=t.trim().replace(/^#/,"");if(t&&tags.map(function(x){return x.toLowerCase()}).indexOf(t.toLowerCase())<0)tags.push(t)});
   var ing=[].map.call(document.querySelectorAll(".ing-r"),function(e){return{q:$(".q",e).value.trim(),n:$(".n",e).value.trim()}}).filter(function(i){return i.q||i.n});
   var steps=[].map.call(document.querySelectorAll(".st-r textarea"),function(e){return e.value.trim()}).filter(Boolean);
+  var data={title:title,type:$("#ty").value,tags:tags,ing:ing,steps:steps,updatedAt:serverTimestamp()};
   var r=S.id?byId(S.id):null;
-  if(!r){r={id:"r"+Date.now(),fav:false,comment:""};S.recipes.push(r);S.id=r.id;}
-  r.title=title;r.type=$("#ty").value;r.tags=tags;r.ing=ing;r.steps=steps;
-  save();S.view="detail";render();window.scrollTo(0,0);
+  if(r){
+    Object.assign(r,{title:title,type:data.type,tags:tags,ing:ing,steps:steps});
+    setDoc(doc(col,r.id),data,{merge:true}).catch(console.error);
+  }else{
+    var ref=doc(col);
+    r={id:ref.id,title:title,type:data.type,tags:tags,ing:ing,steps:steps,favs:[],comments:{}};
+    S.recipes.push(r);S.id=ref.id;
+    setDoc(ref,Object.assign({favs:[],comments:{},createdBy:S.uid,createdAt:serverTimestamp()},data)).catch(console.error);
+  }
+  S.view="detail";render();window.scrollTo(0,0);
+}
+var cmT=null;
+function flushComment(){
+  if(!cmT)return;clearTimeout(cmT);cmT=null;
+  var r=byId(S.id),ta=$("#cm");if(!r||!ta)return;
+  var v=ta.value,st=$("#cmok");if(st)st.textContent="Salvataggio…";
+  var o={};o["comments."+S.uid]=v;
+  updateDoc(doc(col,r.id),o).then(function(){var s=$("#cmok");if(s)s.textContent="Salvato ✓";}).catch(function(){var s=$("#cmok");if(s)s.textContent="Errore: non salvato";});
 }
 
-function render(){S.view==="home"?home():S.view==="detail"?detail():edit();}
-
+/* ---------- eventi ---------- */
+app.addEventListener("input",function(e){
+  var t=e.target;
+  if(t.id==="q"){S.q=t.value;renderList();}
+  else if(t.id==="cm"){
+    grow(t);var r=byId(S.id);if(r){r.comments=r.comments||{};r.comments[S.uid]=t.value;}
+    clearTimeout(cmT);cmT=setTimeout(flushComment,700);
+    var st=$("#cmok");if(st)st.textContent="…";
+  }
+});
+app.addEventListener("focusout",function(e){if(e.target.id==="cm")flushComment();});
+window.addEventListener("pagehide",flushComment);
+window.addEventListener("resize",function(){grow($("#cm"));});
+app.addEventListener("submit",function(e){
+  e.preventDefault();
+  if(e.target.id!=="lf")return;
+  signInWithEmailAndPassword(auth,$("#em").value.trim(),$("#pw").value).catch(function(){S.loginErr="Email o password non corretti.";login();});
+});
 app.addEventListener("click",function(e){
-  var t=e.target.closest("button");if(!t)return;
+  var t=e.target.closest("button");if(!t||t.type==="submit")return;
   var d=t.dataset;
   if(d.tab){S.tab=d.tab;render();}
   else if(d.open){S.id=d.open;S.view="detail";render();window.scrollTo(0,0);}
   else if(d.new){S.id=null;S.view="edit";render();window.scrollTo(0,0);}
-  else if(d.home||d.cancel){S.view=(d.cancel&&S.id)?"detail":"home";render();}
-  else if(d.fav){var r=byId(S.id);r.fav=!r.fav;save();render();}
-  else if(d.edit){S.view="edit";render();window.scrollTo(0,0);}
-  else if(d.del){if(confirm("Eliminare questa ricetta?")){S.recipes=S.recipes.filter(function(r){return r.id!==S.id});save();S.id=null;S.view="home";render();}}
+  else if(d.home||d.cancel){flushComment();S.view=(d.cancel&&S.id)?"detail":"home";render();}
+  else if(d.fav){
+    var r=byId(S.id),on=!isFav(r);
+    r.favs=on?r.favs.concat(S.uid):r.favs.filter(function(u){return u!==S.uid});
+    updateDoc(doc(col,r.id),{favs:on?arrayUnion(S.uid):arrayRemove(S.uid)}).catch(console.error);
+    render();
+  }
+  else if(d.edit){flushComment();S.view="edit";render();window.scrollTo(0,0);}
+  else if(d.del){if(confirm("Eliminare questa ricetta? Sparirà anche per l’altra persona.")){var id=S.id;S.recipes=S.recipes.filter(function(r){return r.id!==id});deleteDoc(doc(col,id)).catch(console.error);S.id=null;S.view="home";render();}}
   else if(d.addi){$("#il").insertAdjacentHTML("beforeend",rowIng());$("#il").lastChild.querySelector(".q").focus();}
   else if(d.adds){$("#sl").insertAdjacentHTML("beforeend",rowStep());$("#sl").lastChild.querySelector("textarea").focus();}
   else if(d.rm){t.parentNode.remove();}
   else if(d.save){doSave();}
+  else if(d.out){if(confirm("Uscire dall’account?"))signOut(auth);}
 });
 
-
-load();render();
+if(configured){
+  onAuthStateChanged(auth,function(u){
+    if(unsub){unsub();unsub=null;}
+    if(!u){S.uid=null;S.recipes=[];S.view="login";render();return;}
+    S.uid=u.uid;S.loginErr="";S.view="home";render();listen();
+  });
+}else render();
 if("serviceWorker" in navigator){window.addEventListener("load",function(){navigator.serviceWorker.register("sw.js").catch(function(){});});}
 </script>
 </body>
