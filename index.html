@@ -232,7 +232,7 @@ app.addEventListener("submit",function(e){
   signInWithEmailAndPassword(auth,$("#em").value.trim(),$("#pw").value).catch(function(){S.loginErr="Email o password non corretti.";login();});
 });
 app.addEventListener("click",function(e){
-  var t=e.target.closest("button");if(!t||t.type==="submit")return;
+  var t=e.target.closest("button");if(!t||t.getAttribute("type")==="submit")return;
   var d=t.dataset;
   if(d.tab){S.tab=d.tab;render();}
   else if(d.open){S.id=d.open;S.view="detail";render();window.scrollTo(0,0);}
