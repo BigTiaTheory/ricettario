@@ -53,7 +53,8 @@ ul.st{padding-left:22px;margin:0}ul.st li{margin:0 0 12px}
 
 textarea#cm{overflow:hidden;min-height:90px;resize:none}
 .search{margin-bottom:10px}
-.out{color:var(--mu);font-size:14px;padding:6px 2px}
+.avatar{width:40px;height:40px;border-radius:50%;background:var(--ac);color:#fff;font-weight:700;font-size:18px;display:flex;align-items:center;justify-content:center;flex:none}
+.pav{width:84px;height:84px;font-size:38px;margin:0 auto}
 .login{max-width:380px;margin:12vh auto 0}
 .login input{margin-bottom:10px}
 .err{color:#c0392b;font-size:14px;margin:6px 0 10px;min-height:20px}
@@ -64,12 +65,12 @@ textarea#cm{overflow:hidden;min-height:90px;resize:none}
 <div id="app"></div>
 <script type="module">
 import {initializeApp} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
-import {getAuth,onAuthStateChanged,signInWithEmailAndPassword,signOut} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {getAuth,onAuthStateChanged,signInWithEmailAndPassword,signOut,sendPasswordResetEmail,updatePassword,reauthenticateWithCredential,EmailAuthProvider} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
 import {initializeFirestore,persistentLocalCache,persistentMultipleTabManager,collection,doc,setDoc,updateDoc,deleteDoc,onSnapshot,arrayUnion,arrayRemove,writeBatch,serverTimestamp} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 import {firebaseConfig} from "./firebase-config.js";
 
 var TYPES=["Antipasto","Primo","Secondo","Contorno","Dolce","Altro"];
-var S={recipes:[],view:"login",tab:"tipo",id:null,q:"",uid:null,loginErr:""};
+var S={err:"",email:"",recipes:[],view:"login",tab:"tipo",id:null,q:"",uid:null,loginErr:""};
 var app=document.getElementById("app");
 var $=function(s,e){return (e||document).querySelector(s)};
 function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]});}
@@ -94,6 +95,15 @@ function setup(){
 function login(){
   app.innerHTML='<form class="login" id="lf"><h1>Ricettario 🍝</h1><input id="em" type="email" placeholder="Email" autocomplete="username" required><input id="pw" type="password" placeholder="Password" autocomplete="current-password" required><div class="err">'+esc(S.loginErr)+'</div><button class="btn" style="width:100%;padding:13px" type="submit">Accedi</button></form>';
 }
+function initial(){return (S.email||"?").charAt(0).toUpperCase();}
+function msg(id,t,ok){var el=$("#"+id);if(el){el.textContent=t;el.style.color=ok?"var(--mu)":"#c0392b";}}
+function profile(){
+  var h='<button class="back" data-home="1">‹ Ricette</button><div style="text-align:center;margin:10px 0 4px"><div class="avatar pav">'+esc(initial())+'</div><h1 style="font-size:22px;margin:12px 0 2px;word-break:break-all">'+esc(S.email)+'</h1><div style="color:var(--mu);font-size:14px">'+S.recipes.length+' ricette nel ricettario</div></div>';
+  h+='<h2>Cambia password</h2><form id="pf"><input id="p0" type="password" placeholder="Password attuale" autocomplete="current-password" required><div style="height:8px"></div><input id="p1" type="password" placeholder="Nuova password (min. 6 caratteri)" autocomplete="new-password" required minlength="6"><div style="height:8px"></div><input id="p2" type="password" placeholder="Ripeti la nuova password" autocomplete="new-password" required><div class="err" id="pmsg"></div><button class="btn" type="submit" style="width:100%">Aggiorna password</button></form>';
+  h+='<h2>Password dimenticata?</h2><button class="btn sec" style="width:100%" data-reset="1">Inviami un’email per reimpostarla</button><div class="err" id="rmsg"></div>';
+  h+='<div class="acts"><button class="btn del" style="width:100%" data-out="1">Esci dall’account</button></div>';
+  app.innerHTML=h;
+}
 function card(r){
   return '<button class="card" data-open="'+r.id+'"><div class="f"><div class="t">'+esc(r.title)+'</div><div class="s">'+esc(r.type)+(r.tags.length?' · '+r.tags.map(esc).join(', '):'')+'</div></div>'+(isFav(r)?'<span class="star">★</span>':'')+'</button>';
 }
@@ -103,7 +113,7 @@ function matches(r){
   return q.split(/\s+/).every(function(w){return hay.indexOf(w)>=0});
 }
 function home(){
-  var h='<div class="top"><h1>Ricettario</h1><button class="out" data-out="1">Esci</button></div>';
+  var h='<div class="top"><h1>Ricettario</h1><button class="avatar" data-profile="1" aria-label="Profilo">'+esc(initial())+'</button></div>';
   h+='<input id="q" class="search" type="search" placeholder="Cerca ricetta, tag o ingrediente…" value="'+esc(S.q)+'">';
   h+='<div class="tabs">'+[["tipo","Tipologia"],["tag","Tag"],["fav","★ Preferite"]].map(function(t){return '<button data-tab="'+t[0]+'" class="'+(S.tab===t[0]?'on':'')+'">'+t[1]+'</button>'}).join('')+'</div>';
   h+='<div id="list"></div><div class="fab"><button class="btn" data-new="1">+ Nuova ricetta</button></div>';
@@ -125,7 +135,7 @@ function renderList(){
     var f=sorted(rs.filter(isFav));
     h=f.length?f.map(card).join(''):'<div class="empty"><div class="big">☆</div>Tocca la stellina in una ricetta per metterla qui.</div>';
   }
-  el.innerHTML=h;
+  el.innerHTML=(S.err?'<div class="note" style="margin:0 0 12px;color:#c0392b">'+esc(S.err)+'</div>':"")+h;
 }
 function grow(t){if(!t)return;t.style.height="auto";t.style.height=t.scrollHeight+"px";}
 function detail(){
@@ -156,7 +166,7 @@ function edit(){
 }
 function render(){
   if(!configured)return setup();
-  S.view==="login"?login():S.view==="home"?home():S.view==="detail"?detail():edit();
+  S.view==="login"?login():S.view==="home"?home():S.view==="detail"?detail():S.view==="profile"?profile():edit();
 }
 function refresh(){ /* dopo un aggiornamento dal database: non disturbare chi sta scrivendo */
   if(S.view==="login"){S.view="home";return render();}
@@ -169,10 +179,10 @@ function snap(d){var x=d.data();return{id:d.id,title:x.title||"",type:x.type||"A
 function listen(){
   var first=true;
   unsub=onSnapshot(col,function(qs){
-    S.recipes=qs.docs.map(snap);
+    S.recipes=qs.docs.map(snap);S.err="";
     refresh();
     if(first){first=false;migrate();}
-  },function(e){console.error(e);});
+  },function(e){console.error(e);S.err=e.code==="permission-denied"?"Non riesco a leggere le ricette online: controlla che la tua email sia scritta nelle regole di Firestore.":"Errore di connessione al database.";refresh();});
 }
 async function migrate(){
   var raw=null,loc=[];
@@ -228,6 +238,13 @@ window.addEventListener("pagehide",flushComment);
 window.addEventListener("resize",function(){grow($("#cm"));});
 app.addEventListener("submit",function(e){
   e.preventDefault();
+  if(e.target.id==="pf"){
+    var p0=$("#p0").value,p1=$("#p1").value,p2=$("#p2").value,f=e.target,u=auth.currentUser;
+    if(p1!==p2)return msg("pmsg","Le due password non coincidono.");
+    msg("pmsg","Aggiornamento…",true);
+    reauthenticateWithCredential(u,EmailAuthProvider.credential(u.email,p0)).then(function(){return updatePassword(u,p1);}).then(function(){f.reset();msg("pmsg","Password aggiornata ✓",true);}).catch(function(err){msg("pmsg",err.code==="auth/weak-password"?"La password deve avere almeno 6 caratteri.":"Password attuale non corretta.");});
+    return;
+  }
   if(e.target.id!=="lf")return;
   signInWithEmailAndPassword(auth,$("#em").value.trim(),$("#pw").value).catch(function(){S.loginErr="Email o password non corretti.";login();});
 });
@@ -250,14 +267,16 @@ app.addEventListener("click",function(e){
   else if(d.adds){$("#sl").insertAdjacentHTML("beforeend",rowStep());$("#sl").lastChild.querySelector("textarea").focus();}
   else if(d.rm){t.parentNode.remove();}
   else if(d.save){doSave();}
+  else if(d.profile){S.view="profile";render();window.scrollTo(0,0);}
+  else if(d.reset){msg("rmsg","Invio in corso…",true);sendPasswordResetEmail(auth,S.email).then(function(){msg("rmsg","Email inviata a "+S.email+". Controlla anche lo spam.",true);}).catch(function(){msg("rmsg","Non sono riuscito a inviare l’email: riprova più tardi.");});}
   else if(d.out){if(confirm("Uscire dall’account?"))signOut(auth);}
 });
 
 if(configured){
   onAuthStateChanged(auth,function(u){
     if(unsub){unsub();unsub=null;}
-    if(!u){S.uid=null;S.recipes=[];S.view="login";render();return;}
-    S.uid=u.uid;S.loginErr="";S.view="home";render();listen();
+    if(!u){S.uid=null;S.email="";S.recipes=[];S.view="login";render();return;}
+    S.uid=u.uid;S.email=u.email||"";S.loginErr="";S.view="home";render();listen();
   });
 }else render();
 if("serviceWorker" in navigator){window.addEventListener("load",function(){navigator.serviceWorker.register("sw.js").catch(function(){});});}
